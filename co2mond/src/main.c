@@ -59,12 +59,13 @@ device_loop(co2mon_device dev)
     }
 
     int has_temp = 0;
-	int has_co2 = 0;
-	double temperature = 0.0;
-	int co2 = 0;
+    int has_co2 = 0;
+    double temperature = 0.0;
+    int co2 = 0;
 
     while (!has_temp | !has_co2)
     {
+
         int r = co2mon_read_data(dev, magic_table, result);
         if (r <= 0)
         {
@@ -95,8 +96,8 @@ device_loop(co2mon_device dev)
         switch (r0)
         {
         case CODE_TAMB:
-		    temperature = decode_temperature(w);
-			has_temp = 1;
+            temperature = decode_temperature(w);
+            has_temp = 1;
             //snprintf(buf, VALUE_MAX, "%.4f", decode_temperature(w));
             break;
         case CODE_CNTR:
@@ -111,7 +112,7 @@ device_loop(co2mon_device dev)
             break;
         }
     }
-	fprintf(stdout, "{ \"success\": true, \"data\": { \"temperature\":\"%.4f\", \"co2\":\"%d\" } }", temperature, co2)
+	fprintf(stdout, "{ \"success\": true, \"data\": { \"temperature\":\"%.4f\", \"co2\":\"%d\" } }", temperature, co2);
 }
 
 static co2mon_device
@@ -128,27 +129,24 @@ static void
 main_loop()
 {
     int error_shown = 0;
-    while (1)
+    co2mon_device dev = open_device();
+    if (dev == NULL)
     {
-        co2mon_device dev = open_device();
-        if (dev == NULL)
-        {
-            if (!error_shown)
-            {
-                fprintf(stdout, "{ \"success\": false, \"error\":\"Unable to open CO2 device\" }");
-                error_shown = 1;
-            }
-			return;
+       if (!error_shown)
+       {
+            fprintf(stdout, "{ \"success\": false, \"error\":\"Unable to open CO2 device\" }");
+            error_shown = 1;
         }
-        else
-        {
-            error_shown = 0;
-        }
-
-        device_loop(dev);
-
-        co2mon_close_device(dev);
+        return;
     }
+    else
+    {
+        error_shown = 0;
+    }
+
+    device_loop(dev);
+
+    co2mon_close_device(dev);
 }
 
 int main(int argc, char *argv[])
