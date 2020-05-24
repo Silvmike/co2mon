@@ -1,0 +1,74 @@
+<html>
+<script src="jquery-3.5.1.min.js"></script>
+<body>
+<div id="error" style="width:100%;height:10%;font-size:8vh;display:none;background-color:red;text-align:center">
+    error text
+</div>
+<div id="co2" style="width:100%;height:20%;font-size:15vh;background-color:green;text-align:center">
+    UNKNOWN ppm
+</div>
+<div id="temperature" style="width:100%;height:20%;font-size:15vh;background-color:white;text-align:center">
+    UNKNOWN C
+</div>
+</body>
+<script>
+    var getLinearRGB = function(value, min, max) {
+        var low_r = 0;
+        var low_g = 255;
+        var high_r = 255;
+        var high_g = 0;
+
+        if (value < min) value = min;
+        if (value > max) value = max;
+
+        var r = Math.round(((low_r + high_r) * (value - min)) / (max - min));
+        var g = Math.round(((low_g + high_g) * (max - value)) / (max - min));
+        var b = 0;
+
+        return "rgb(" + r + "," + g + "," + b + ")";
+    };
+    var setCO2 = function(value) {
+
+        var co2 = $('#co2');
+        co2.text(value + ' ppm');
+
+        var rgb = getLinearRGB(value, 400, 1200)
+        co2.css("background-color", rgb);
+    };
+    var setTemperature = function(value) {
+
+        var temperature = $('#temperature');
+        temperature.text(value + ' C');
+
+    };
+    var setError = function(text,show) {
+        var error = $('#error');
+        error.text(text);
+
+        if (show) {
+            error.show();
+        } else {
+            error.hide();
+        }
+    }
+    setInterval(function() {
+
+        console.log(
+            $.ajax({
+                url: "mon.json"
+            }).done(function(data) {
+
+                setError(data["error"], !data["success"]);
+                if (data["success"]) {
+
+                    setCO2(data["data"]["co2"]);
+                    setTemperature(data["data"]["temperature"]);
+                } else {
+                    setCO2("UNKNOWN");
+                    setTemperature("UNKNOWN");
+                }
+            }));
+
+    }, 5000);
+</script>
+</html>
