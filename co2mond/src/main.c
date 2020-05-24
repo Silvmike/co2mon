@@ -37,93 +37,13 @@
 #define PATH_MAX 4096
 #define VALUE_MAX 20
 
-int daemonize = 0;
-int print_unknown = 0;
 const char *devicefile = NULL;
 char *datadir;
-
-uint16_t co2mon_data[256];
-
-static int
-lock(int fd, short int type)
-{
-    struct flock lock;
-    lock.l_start = 0;
-    lock.l_len = 0;
-    lock.l_whence = SEEK_SET;
-    lock.l_type = type;
-    return fcntl(fd, F_SETLKW, &lock);
-}
 
 static double
 decode_temperature(uint16_t w)
 {
     return (double)w * 0.0625 - 273.15;
-}
-
-static int
-write_data(int fd, const char *value)
-{
-    char data[VALUE_MAX + 1];
-    snprintf(data, VALUE_MAX + 1, "%s\n", value);
-
-    if (lock(fd, F_WRLCK) != 0)
-    {
-        perror("lock");
-        return 0;
-    }
-
-    if (ftruncate(fd, 0) != 0)
-    {
-        perror("ftruncate");
-        return 0;
-    }
-
-    ssize_t len = strnlen(data, VALUE_MAX + 1);
-    if (write(fd, data, len) != len)
-    {
-        perror("write");
-        return 0;
-    }
-
-    if (lock(fd, F_UNLCK) != 0)
-    {
-        perror("unlock");
-        return 0;
-    }
-
-    return 1;
-}
-
-static int
-write_value(const char *name, const char *value)
-{
-    if (!datadir)
-    {
-        return 1;
-    }
-
-    char filename[PATH_MAX];
-    snprintf(filename, PATH_MAX, "%s/%s", datadir, name);
-
-    int fd = open(filename, O_CREAT | O_WRONLY, 0666);
-    if (fd == -1)
-    {
-        perror(filename);
-        return 0;
-    }
-
-    int result = write_data(fd, value);
-    close(fd);
-    return result;
-}
-
-static void
-write_heartbeat()
-{
-    char buf[VALUE_MAX];
-    snprintf(buf, VALUE_MAX, "%lld", (long long)time(0));
-    write_value("heartbeat", buf);
 }
 
 static void
@@ -134,22 +54,27 @@ device_loop(co2mon_device dev)
 
     if (!co2mon_send_magic_table(dev, magic_table))
     {
-        fprintf(stderr, "Unable to send magic table to CO2 device\n");
+        fprintf(stdout, "{ \"success\": false, \"error\":\"Unable to send magic table to CO2 device\" }");
         return;
     }
 
-    while (1)
+    int has_temp = 0;
+	int has_co2 = 0;
+	double temperature = 0.0;
+	int co2 = 0;
+
+    while (!has_temp | !has_co2)
     {
         int r = co2mon_read_data(dev, magic_table, result);
         if (r <= 0)
         {
-            fprintf(stderr, "Error while reading data from device\n");
+            fprintf(stdout, "{ \"success\": false, \"error\":\"Error while reading data from device\" }");
             break;
         }
 
         if (result[4] != 0x0d)
         {
-            fprintf(stderr, "Unexpected data from device (data[4] = %02hhx, want 0x0d)\n", result[4]);
+            fprintf(stdout, "{ \"success\": false, \"error\":\"Unexpected data from device (data[4] = %02hhx, want 0x0d)\" }", result[4]);
             continue;
         }
 
@@ -161,68 +86,32 @@ device_loop(co2mon_device dev)
         checksum = r0 + r1 + r2;
         if (checksum != r3)
         {
-            fprintf(stderr, "checksum error (%02hhx, await %02hhx)\n", checksum, r3);
+            fprintf(stdout, "{ \"success\": false, \"error\":\"checksum error (%02hhx, await %02hhx)\" }", checksum, r3);
             continue;
         }
 
-        char buf[VALUE_MAX];
         uint16_t w = (result[1] << 8) + result[2];
 
         switch (r0)
         {
         case CODE_TAMB:
-            snprintf(buf, VALUE_MAX, "%.4f", decode_temperature(w));
-
-            if (!daemonize)
-            {
-                printf("Tamb\t%s\n", buf);
-                fflush(stdout);
-            }
-
-            if (co2mon_data[r0] != w)
-            {
-                if (write_value("Tamb", buf))
-                {
-                    co2mon_data[r0] = w;
-                }
-            }
-
-            write_heartbeat();
-
+		    temperature = decode_temperature(w);
+			has_temp = 1;
+            //snprintf(buf, VALUE_MAX, "%.4f", decode_temperature(w));
             break;
         case CODE_CNTR:
             if ((unsigned)w > 3000) {
                 // Avoid reading spurious (uninitialized?) data
                 break;
             }
-            snprintf(buf, VALUE_MAX, "%d", (int)w);
-
-            if (!daemonize)
-            {
-                printf("CntR\t%s\n", buf);
-                fflush(stdout);
-            }
-
-            if (co2mon_data[r0] != w)
-            {
-                if (write_value("CntR", buf))
-                {
-                    co2mon_data[r0] = w;
-                }
-            }
-
-            write_heartbeat();
-
+			has_co2 = 1;
+			co2 = (int)w;
             break;
         default:
-            if (print_unknown && !daemonize)
-            {
-                printf("0x%02hhx\t%d\n", r0, (int)w);
-                fflush(stdout);
-            }
-            co2mon_data[r0] = w;
+            break;
         }
     }
+	fprintf(stdout, "{ \"success\": true, \"data\": { \"temperature\":\"%.4f\", \"co2\":\"%d\" } }", temperature, co2)
 }
 
 static co2mon_device
@@ -246,11 +135,10 @@ main_loop()
         {
             if (!error_shown)
             {
-                fprintf(stderr, "Unable to open CO2 device\n");
+                fprintf(stdout, "{ \"success\": false, \"error\":\"Unable to open CO2 device\" }");
                 error_shown = 1;
             }
-            sleep(1);
-            continue;
+			return;
         }
         else
         {
@@ -265,135 +153,6 @@ main_loop()
 
 int main(int argc, char *argv[])
 {
-    char *reldatadir = 0;
-    char *pidfile = 0;
-    char *logfile = 0;
-
-    int c;
-    int opterr = 0;
-    int show_help = 0;
-    while ((c = getopt(argc, argv, ":dhuD:f:l:p:")) != -1)
-    {
-        switch (c)
-        {
-        case 'd':
-            daemonize = 1;
-            break;
-        case 'h':
-            show_help = 1;
-            break;
-        case 'u':
-            print_unknown = 1;
-            break;
-        case 'D':
-            reldatadir = optarg;
-            break;
-        case 'f':
-            devicefile = optarg;
-            break;
-        case 'l':
-            logfile = optarg;
-            break;
-        case 'p':
-            pidfile = optarg;
-            break;
-        case ':':
-            fprintf(stderr, "Option -%c requires an operand\n", optopt);
-            opterr++;
-            break;
-        case '?':
-            fprintf(stderr, "Unrecognized option: -%c\n", optopt);
-            opterr++;
-        }
-    }
-    if (show_help || opterr || optind != argc)
-    {
-        fprintf(stderr, "usage: co2mond [-dhu] [-D datadir] [-f device] [-p pidfle] [-l logfile]\n");
-        if (show_help)
-        {
-            fprintf(stderr, "\n");
-            fprintf(stderr, "  -d    run as a daemon\n");
-            fprintf(stderr, "  -h    show this help message\n");
-            fprintf(stderr, "  -u    print values for unknown items\n");
-            fprintf(stderr, "  -D datadir\n");
-            fprintf(stderr, "        store values from the sensor in datadir\n");
-            fprintf(stderr, "  -f devicefile\n");
-#ifdef __linux__
-            fprintf(stderr, "        path to a device (e.g., /dev/hidraw0)\n");
-#else
-            fprintf(stderr, "        path to a device\n");
-#endif
-            fprintf(stderr, "  -p pidfile\n");
-            fprintf(stderr, "        write PID to a file named pidfile\n");
-            fprintf(stderr, "  -l logfile\n");
-            fprintf(stderr, "        write diagnostic information to a file named logfile\n");
-            fprintf(stderr, "\n");
-        }
-        exit(1);
-    }
-    if (daemonize && !reldatadir)
-    {
-        fprintf(stderr, "co2mond: it is useless to use -d without -D.\n");
-        exit(1);
-    }
-
-    if (reldatadir)
-    {
-        datadir = realpath(reldatadir, NULL);
-        if (datadir == NULL)
-        {
-            perror(reldatadir);
-            exit(1);
-        }
-    }
-
-    int pidfd = -1;
-    if (pidfile)
-    {
-        pidfd = open(pidfile, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-        if (pidfd == -1)
-        {
-            perror(pidfile);
-            exit(1);
-        }
-    }
-
-    int logfd = -1;
-    if (logfile)
-    {
-        logfd = open(logfile, O_CREAT | O_WRONLY | O_APPEND, 0666);
-        if (logfd == -1)
-        {
-            perror(logfile);
-            exit(1);
-        }
-    }
-
-    if (daemonize)
-    {
-        if (daemon(0, 0) == -1)
-        {
-            perror("daemon");
-            exit(1);
-        }
-    }
-
-    if (pidfd != -1)
-    {
-        char pid[VALUE_MAX];
-        snprintf(pid, VALUE_MAX, "%lld", (long long)getpid());
-        if (!write_data(pidfd, pid))
-        {
-            exit(1);
-        }
-    }
-
-    if (logfd != -1)
-    {
-        dup2(logfd, fileno(stderr));
-        close(logfd);
-    }
-
     int r = co2mon_init();
     if (r < 0)
     {
@@ -403,10 +162,5 @@ int main(int argc, char *argv[])
     main_loop();
 
     co2mon_exit();
-
-    if (datadir)
-    {
-        free(datadir);
-    }
     return 1;
 }
